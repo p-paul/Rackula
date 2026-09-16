@@ -77,4 +77,55 @@ test.describe("Container child images", () => {
       await expect(childImage.first()).toBeVisible({ timeout: 1500 });
     }).toPass({ timeout: 15000 });
   });
+
+  test("a measured device is framed to its own width, not the rack", async ({
+    page,
+  }) => {
+    await gotoWithRack(page);
+
+    await page.click('[data-testid="btn-create-custom-device"]');
+    const dialog = page.locator(locators.dialog.root);
+    await expect(dialog).toBeVisible();
+
+    await page.fill(
+      '#device-name, input[placeholder*="name" i]',
+      "Measured Probe",
+    );
+    await page.fill("#device-width", "140");
+
+    await dialog
+      .locator('input[type="file"]')
+      .first()
+      .setInputFiles(testImagePath);
+    const cropDialog = page.getByTestId("image-crop-dialog");
+    await expect(cropDialog).toBeVisible();
+    // The hint names the device's own size rather than a rack width, which is
+    // the whole point: a 140 mm device is 140 mm in any rack.
+    await expect(cropDialog).toContainText("140 mm");
+    await expect(cropDialog).not.toContainText("inch rack");
+
+    const applyCrop = cropDialog.getByTestId("btn-apply-crop");
+    await expect(applyCrop).toBeEnabled();
+    await applyCrop.click();
+    await expect(cropDialog).toBeHidden();
+
+    await dialog.locator('[data-testid="btn-add-device"]').click();
+
+    const paletteItem = page.getByRole("listitem", {
+      name: "Measured Probe, 1U, server, 140 mm wide",
+    });
+    await expect(paletteItem).toBeVisible();
+
+    await paletteItem.click();
+    await page
+      .locator("[data-rack-id]")
+      .first()
+      .click({ position: { x: 60, y: 60 } });
+
+    const childImage = page.getByTestId("child-device-image");
+    await expect(async () => {
+      await page.keyboard.press("i");
+      await expect(childImage.first()).toBeVisible({ timeout: 1500 });
+    }).toPass({ timeout: 15000 });
+  });
 });
