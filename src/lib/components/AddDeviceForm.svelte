@@ -19,6 +19,7 @@
   import { getCropUnitHeight } from "$lib/utils/image-crop";
   import {
     WIDTH_UNITS,
+    formatWidthMm,
     getRackOpeningMm,
     toMillimetres,
     type WidthUnit,
@@ -106,15 +107,6 @@
   // The image is drawn in every rack width the device fits, so the crop shows
   // guides for the widths it is not framed for.
   const cropRackWidth = $derived(getCropRackWidth(rackWidthOption));
-  // The crop frame follows the form: a half-width device is drawn in a carrier
-  // cell half the interior wide, so it is framed that way rather than to the
-  // full rails.
-  const cropWidthFraction = $derived(isHalfWidth ? 0.5 : 1);
-  const cropWidthLabel = $derived(
-    isHalfWidth
-      ? `a half-width ${getCropUnitHeight(height)}U device in a ${cropRackWidth} inch rack`
-      : undefined,
-  );
   const cropGuideRackWidths = $derived(optionToRackWidths(rackWidthOption));
   let userChangedColour = $state(false);
 
@@ -128,6 +120,28 @@
   let widthError = $state("");
 
   const hasWidth = $derived(widthValue !== null && widthValue !== undefined);
+
+  // The crop frame follows the form. A measured width wins and frames the
+  // device to its own shape, so the frame reshapes as the width is typed.
+  // Otherwise a half-width device is framed to the carrier cell it is drawn
+  // in, and anything else to the rails.
+  const cropWidthMm = $derived(
+    hasWidth ? toMillimetres(widthValue!, widthUnit) : undefined,
+  );
+  const cropWidthFraction = $derived(
+    cropWidthMm !== undefined && cropWidthMm > 0
+      ? cropWidthMm / getRackOpeningMm(cropRackWidth)
+      : isHalfWidth
+        ? 0.5
+        : 1,
+  );
+  const cropWidthLabel = $derived(
+    cropWidthMm !== undefined && cropWidthMm > 0
+      ? `a ${getCropUnitHeight(height)}U device ${formatWidthMm(cropWidthMm)} wide`
+      : isHalfWidth
+        ? `a half-width ${getCropUnitHeight(height)}U device in a ${cropRackWidth} inch rack`
+        : undefined,
+  );
 
   // Reset form when dialog opens
   $effect(() => {

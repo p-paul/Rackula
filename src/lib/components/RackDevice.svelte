@@ -35,6 +35,7 @@
   import { getPlacementStore } from "$lib/stores/placement.svelte";
   import { getConnectionCreationStore } from "$lib/stores/connection-creation.svelte";
   import { placementKey } from "$lib/utils/placement-key";
+  import { getRackOpeningMm } from "$lib/utils/device-width";
   import { getViewportStore } from "$lib/utils/viewport.svelte";
   import { useLongPress } from "$lib/utils/gestures";
   import { hapticTap } from "$lib/utils/haptics";
@@ -60,7 +61,7 @@
     selected: boolean;
     uHeight: number;
     rackWidth: number;
-    /** Nominal rack width in inches, to size gaps in millimetres */
+    /** Nominal rack width in inches, to size gaps and measured child widths in millimetres */
     nominalRackWidth: number;
     displayMode?: DisplayMode;
     rackView?: RackView;
@@ -372,6 +373,25 @@
   // Helper to get child device type from library
   function getChildDeviceType(slug: string): DeviceType | undefined {
     return deviceLibrary.find((d) => d.slug === slug);
+  }
+
+  /**
+   * Width a measured child is drawn at inside its cell, in px.
+   *
+   * Drawing it at its real width, centred, shows the device rather than a block
+   * filling the cell, and makes the image match the crop frame, which is shaped
+   * from the same measurement. A child with no measured width fills its cell,
+   * which is already its drawn width.
+   */
+  function getChildDrawnWidth(
+    childType: DeviceType,
+    cellWidth: number,
+  ): number {
+    if (childType.width_mm === undefined || childType.width_mm <= 0) {
+      return cellWidth;
+    }
+    const pxPerMm = deviceWidth / getRackOpeningMm(nominalRackWidth);
+    return Math.min(cellWidth, childType.width_mm * pxPerMm);
   }
 
   /**
@@ -1074,8 +1094,8 @@
             childType.u_height,
             uHeight,
           )}
-          {@const childWidth = slotGeo.width}
-          {@const childX = slotGeo.x}
+          {@const childWidth = getChildDrawnWidth(childType, slotGeo.width)}
+          {@const childX = slotGeo.x + (slotGeo.width - childWidth) / 2}
           {@const childImageUrl = getChildImageUrl(child, childType)}
           {@const childColour =
             child.colour_override ??
