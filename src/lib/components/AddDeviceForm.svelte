@@ -22,6 +22,7 @@
     formatWidthMm,
     getRackOpeningMm,
     toMillimetres,
+    uHeightForMm,
     type WidthUnit,
   } from "$lib/utils/device-width";
 
@@ -40,6 +41,7 @@
       isFullDepth: boolean;
       isHalfWidth: boolean;
       widthMm?: number;
+      heightMm?: number;
       rackWidths: RackWidth[];
       frontImage?: ImageData;
       rearImage?: ImageData;
@@ -94,7 +96,16 @@
 
   // Form state
   let name = $state("");
+  // Height as entered: rack units, or a measured length the rack units are
+  // derived from.
   let height = $state(1);
+  let heightUnit = $state<"U" | WidthUnit>("U");
+  const heightMm = $derived(
+    heightUnit === "U" ? undefined : toMillimetres(height, heightUnit),
+  );
+  const uHeight = $derived(
+    heightMm === undefined ? height : uHeightForMm(heightMm),
+  );
   let category = $state<DeviceCategory>("server");
   let colour = $state(getDefaultColour("server"));
   let notes = $state("");
@@ -137,9 +148,9 @@
   );
   const cropWidthLabel = $derived(
     cropWidthMm !== undefined && cropWidthMm > 0
-      ? `a ${getCropUnitHeight(height)}U device ${formatWidthMm(cropWidthMm)} wide`
+      ? `a ${getCropUnitHeight(uHeight)}U device ${formatWidthMm(cropWidthMm)} wide`
       : isHalfWidth
-        ? `a half-width ${getCropUnitHeight(height)}U device in a ${cropRackWidth} inch rack`
+        ? `a half-width ${getCropUnitHeight(uHeight)}U device in a ${cropRackWidth} inch rack`
         : undefined,
   );
 
@@ -148,6 +159,7 @@
     if (open) {
       name = initialName ?? "";
       height = 1;
+      heightUnit = "U";
       category = "server";
       colour = getDefaultColour("server");
       notes = "";
@@ -212,8 +224,17 @@
       valid = false;
     }
 
-    if (height < MIN_DEVICE_HEIGHT || height > MAX_DEVICE_HEIGHT) {
-      heightError = `Height must be between ${MIN_DEVICE_HEIGHT} and ${MAX_DEVICE_HEIGHT}`;
+    if (heightMm === undefined) {
+      if (height < MIN_DEVICE_HEIGHT || height > MAX_DEVICE_HEIGHT) {
+        heightError = `Height must be between ${MIN_DEVICE_HEIGHT} and ${MAX_DEVICE_HEIGHT}`;
+        valid = false;
+      }
+    } else if (!(heightMm > 0)) {
+      // Check the stored value: tiny inputs round to 0 mm.
+      heightError = "Height must be at least 0.1 mm";
+      valid = false;
+    } else if (uHeight > MAX_DEVICE_HEIGHT) {
+      heightError = `Too tall: ${uHeight}U, up to ${MAX_DEVICE_HEIGHT}U`;
       valid = false;
     }
 
@@ -238,7 +259,8 @@
     if (validate()) {
       onadd?.({
         name: name.trim(),
-        height,
+        height: uHeight,
+        heightMm,
         category,
         colour,
         notes: notes.trim(),
@@ -298,29 +320,37 @@
 
     <div class="form-row">
       <div class="form-group">
-        <label for="device-height">Height (U)</label>
-        <input
-          type="number"
-          id="device-height"
-          class="input-field"
-          bind:value={height}
-          min={MIN_DEVICE_HEIGHT}
-          max={MAX_DEVICE_HEIGHT}
-          step="0.5"
-          class:error={heightError}
-          oninput={(e: Event) => {
-            const val = parseFloat((e.target as HTMLInputElement).value);
-            if (
-              heightError &&
-              !Number.isNaN(val) &&
-              val >= MIN_DEVICE_HEIGHT &&
-              val <= MAX_DEVICE_HEIGHT
-            )
-              heightError = "";
-          }}
-        />
+        <label for="device-height">Height</label>
+        <div class="width-input-wrapper">
+          <input
+            type="number"
+            id="device-height"
+            class="input-field"
+            bind:value={height}
+            min={heightUnit === "U" ? MIN_DEVICE_HEIGHT : 0}
+            max={heightUnit === "U" ? MAX_DEVICE_HEIGHT : undefined}
+            step={heightUnit === "U" ? "0.5" : "any"}
+            class:error={heightError}
+            oninput={() => (heightError = "")}
+          />
+          <select
+            id="device-height-unit"
+            class="input-field"
+            aria-label="Height unit"
+            bind:value={heightUnit}
+            onchange={() => (heightError = "")}
+          >
+            {#each ["U", ...WIDTH_UNITS] as unit (unit)}
+              <option value={unit}>{unit}</option>
+            {/each}
+          </select>
+        </div>
         {#if heightError}
           <span class="error-message">{heightError}</span>
+        {:else if heightMm !== undefined}
+          <span class="helper-text" data-testid="height-rack-units"
+            >Takes {uHeight}U</span
+          >
         {/if}
       </div>
 
@@ -460,7 +490,7 @@
         face="front"
         currentImage={frontImage}
         deviceName={name}
-        uHeight={height}
+        {uHeight}
         rackWidth={cropRackWidth}
         guideRackWidths={cropGuideRackWidths}
         widthFraction={cropWidthFraction}
@@ -472,7 +502,7 @@
         face="rear"
         currentImage={rearImage}
         deviceName={name}
-        uHeight={height}
+        {uHeight}
         rackWidth={cropRackWidth}
         guideRackWidths={cropGuideRackWidths}
         widthFraction={cropWidthFraction}
