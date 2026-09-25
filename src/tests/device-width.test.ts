@@ -47,6 +47,15 @@ function measuredDevice(width_mm: number, slug = "mini-pc"): DeviceType {
 
 const thirdSlot = createTestSlot({ id: "left", width_fraction: 0.33 });
 
+describe("getRackOpeningMm", () => {
+  it("uses the published clear opening where one exists", () => {
+    // Project Mini Rack 8.75 in, EIA-310 minimum, ETSI ETS 300 119-3 W2
+    expect(getRackOpeningMm(10)).toBe(222.25);
+    expect(getRackOpeningMm(19)).toBe(450);
+    expect(getRackOpeningMm(21)).toBe(500);
+  });
+});
+
 describe("canPlaceInSlot with width_mm", () => {
   it("fits a third-width slot in a 19 inch rack when narrow enough", () => {
     expect(canPlaceInSlot(measuredDevice(140), thirdSlot, 19)).toBe(true);
@@ -275,6 +284,49 @@ describe("legacy adapter", () => {
 
     const placed = adapted.racks[0]!.devices.find((d) => d.id === "d1");
     expect(placed?.container_id).toBeDefined();
+  });
+
+  it("loads a hand-written file with a device wider than a half cell", async () => {
+    // A 300 mm device fits no shipped half cell. Wrapping it in one wrote a
+    // file that would not load again, so it gets a carrier cut to its width.
+    const layout = await parseLayoutYaml(`
+version: "1.0"
+name: Hand Written
+racks:
+  - id: rack-a
+    name: Rack A
+    height: 12
+    width: 19
+    desc_units: false
+    show_rear: true
+    form_factor: 4-post-cabinet
+    starting_unit: 1
+    position: 0
+    devices:
+      - id: nas
+        device_type: wide-nas
+        position: 30
+        face: front
+device_types:
+  - slug: wide-nas
+    u_height: 1
+    width_mm: 300
+    category: storage
+    colour: "#336699"
+settings:
+  display_mode: label
+  show_labels_on_images: false
+`);
+
+    const devices = layout.racks[0]!.devices;
+    const nas = devices.find((d) => d.id === "nas");
+    const carrier = devices.find((d) => d.id === nas?.container_id);
+    const cell = layout.device_types.find(
+      (t) => t.slug === carrier?.device_type,
+    )?.slots?.[0];
+    expect(cell?.width_fraction).toBeGreaterThanOrEqual(
+      300 / getRackOpeningMm(19),
+    );
   });
 });
 
