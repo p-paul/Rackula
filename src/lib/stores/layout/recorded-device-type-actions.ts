@@ -6,7 +6,13 @@
  * wrapping raw mutators, then executes it through the history system.
  */
 
-import type { Connection, DeviceType, PlacedDevice, Rack } from "$lib/types";
+import type {
+  Connection,
+  DeviceType,
+  Layout,
+  PlacedDevice,
+  Rack,
+} from "$lib/types";
 import {
   createDeviceType as createDeviceTypeHelper,
   findDeviceType as findDeviceTypeInArray,
@@ -32,8 +38,9 @@ import {
   isGeneratedCarrier,
   isOrphanedAfterRetype,
 } from "$lib/utils/custom-carrier";
-import { gapsFor, remainingMm } from "$lib/utils/slot-layout";
-import { getRackOpeningMm } from "$lib/utils/device-width";
+import { remainingMm } from "$lib/utils/slot-layout";
+import { orientDeviceType } from "$lib/utils/device-width";
+import { reshapeCarrier } from "$lib/utils/collision";
 import { getToastStore } from "$lib/stores/toast.svelte";
 
 /** Rounding slack when a row is compared to its opening, in millimetres. */
@@ -84,18 +91,21 @@ export function updateDeviceTypeRecorded(
   const history = ctx.getHistory();
   const adapter = getCommandStoreAdapter(ctx);
 
-  // A measured width and the cell holding it must agree, so a width change
-  // rewrites every generated carrier holding this device, in the same undo
-  // step. Refused outright rather than left inconsistent when a row overflows.
-  const widthChanged =
-    updates.width_mm !== undefined && updates.width_mm !== existing.width_mm;
-  const recompute = widthChanged
-    ? recomputeCarriersForWidth(ctx, slug, updates.width_mm!, adapter)
+  // A device's size and the cell holding it must agree, so a size change
+  // reshapes every generated carrier holding this device, in the same undo
+  // step. Refused outright rather than left inconsistent when a carrier cannot
+  // take the new shape. A turned device's height is its width, so height
+  // counts too.
+  const sizeChanged = (["width_mm", "height_mm", "u_height"] as const).some(
+    (key) => key in updates && updates[key] !== existing[key],
+  );
+  const recompute = sizeChanged
+    ? reshapeCarriersHolding(ctx, slug, { ...existing, ...updates }, adapter)
     : { commands: [], blocked: [], carrierCount: 0 };
 
   if (recompute.blocked.length > 0) {
     getToastStore().showToast(
-      `That width does not fit in ${recompute.blocked.join(", ")}`,
+      `That size does not fit in ${recompute.blocked.join(", ")}`,
       "warning",
     );
     return false;
@@ -113,7 +123,7 @@ export function updateDeviceTypeRecorded(
   // say how many carriers moved rather than change them silently.
   if (recompute.carrierCount > 0) {
     getToastStore().showToast(
-      `Width changed, ${recompute.carrierCount} carrier${
+      `Size changed, ${recompute.carrierCount} carrier${
         recompute.carrierCount === 1 ? "" : "s"
       } adjusted`,
       "info",
@@ -124,20 +134,20 @@ export function updateDeviceTypeRecorded(
 }
 
 /**
- * Rewrite every generated carrier holding `slug` so its cells match the new
- * measured width.
+ * Reshape every generated carrier holding `slug` around the device's new size,
+ * each child counted as it stands (turned or not).
  *
  * @param ctx - Layout state access
- * @param slug - The device type whose width is changing
- * @param widthMm - The new width in millimetres
+ * @param slug - The device type whose size is changing
+ * @param updated - The device type with the change applied
  * @param adapter - Command store adapter
- * @returns The retype commands, the carriers that cannot take the width, and
+ * @returns The retype commands, the carriers that cannot take the change, and
  *   how many carriers the change touches
  */
-function recomputeCarriersForWidth(
+function reshapeCarriersHolding(
   ctx: LayoutStateAccess,
   slug: string,
-  widthMm: number,
+  updated: DeviceType,
   adapter: ReturnType<typeof getCommandStoreAdapter>,
 ): { commands: Command[]; blocked: string[]; carrierCount: number } {
   const layout = ctx.getLayout();
@@ -154,64 +164,83 @@ function recomputeCarriersForWidth(
       );
       if (!carrierType || !isGeneratedCarrier(carrierType)) continue;
 
-      const slots = carrierType.slots ?? [];
       const holdsIt = rack.devices.some(
         (d) => d.container_id === carrier.id && d.device_type === slug,
       );
       if (!holdsIt) continue;
 
-      const cells = slots.map((slot) => {
-        const child = rack.devices.find(
-          (d) => d.container_id === carrier.id && d.slot_id === slot.id,
-        );
-        return child?.device_type === slug
-          ? {
-              widthFraction: widthMm / getRackOpeningMm(rack.width),
-              heightUnits: slot.height_units ?? 1,
-            }
-          : {
-              widthFraction: slot.width_fraction ?? 1.0,
-              heightUnits: slot.height_units ?? 1,
-            };
-      });
-
-      const candidate = buildCustomCarrierType(
-        carrierType.u_height,
-        cells,
-        gapsFor(carrierType),
+      const reshaped = reshapeCarrier(
+        rack,
+        carrier,
+        carrierType,
+        layout.device_types,
+        (child) => {
+          const type =
+            child.device_type === slug
+              ? updated
+              : findDeviceTypeInArray(layout.device_types, child.device_type);
+          return type && orientDeviceType(type, child.rotation);
+        },
       );
-      if (remainingMm(candidate, rack.width) < -ROW_FIT_SLACK_MM) {
+      if ("refused" in reshaped) {
         blocked.push(carrier.name ?? carrierType.model ?? carrierType.slug);
         continue;
       }
+      const candidate = reshaped.type;
       if (candidate.slug === carrierType.slug) continue;
 
       carrierCount++;
-      if (!layout.device_types.some((dt) => dt.slug === candidate.slug)) {
-        commands.push(createAddDeviceTypeCommand(candidate, adapter));
-      }
       commands.push(
-        createRetypeDeviceCommand(
-          carrier.id,
-          carrierType.slug,
-          candidate.slug,
+        ...retypeCarrierCommands(
+          layout,
+          carrier,
+          carrierType,
+          candidate,
           adapter,
         ),
       );
-      if (isOrphanedAfterRetype(layout.racks, carrierType.slug, carrier.id)) {
-        commands.push(
-          createDeleteDeviceTypeCommand(
-            carrierType,
-            [],
-            adapter,
-            layout.metadata?.id ?? "",
-          ),
-        );
-      }
     }
   }
 
   return { commands, blocked, carrierCount };
+}
+
+/**
+ * Commands that move a carrier onto a new generated type, copy-on-write: the
+ * type is added if new, and the one it leaves is collected when nothing else
+ * uses it.
+ *
+ * @param layout - The layout before the change
+ * @param carrier - The placed carrier
+ * @param from - Its current type
+ * @param to - The type it moves to
+ * @param adapter - Command store adapter
+ */
+export function retypeCarrierCommands(
+  layout: Layout,
+  carrier: PlacedDevice,
+  from: DeviceType,
+  to: DeviceType,
+  adapter: ReturnType<typeof getCommandStoreAdapter>,
+): Command[] {
+  const commands: Command[] = [];
+  if (!layout.device_types.some((dt) => dt.slug === to.slug)) {
+    commands.push(createAddDeviceTypeCommand(to, adapter));
+  }
+  commands.push(
+    createRetypeDeviceCommand(carrier.id, from.slug, to.slug, adapter),
+  );
+  if (isOrphanedAfterRetype(layout.racks, from.slug, carrier.id)) {
+    commands.push(
+      createDeleteDeviceTypeCommand(
+        from,
+        [],
+        adapter,
+        layout.metadata?.id ?? "",
+      ),
+    );
+  }
+  return commands;
 }
 
 /**
